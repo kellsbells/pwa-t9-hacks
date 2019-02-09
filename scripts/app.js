@@ -8,26 +8,16 @@
     spinner: document.querySelector('.loader'),
     cardTemplate: document.querySelector('.cardTemplate'),
     container: document.querySelector('.main'),
-    // addDialog: document.querySelector('.dialog-container'),
-    // daysOfWeek: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+    onLine: navigator.onLine,
   };
 
+  window.addEventListener('offline', (() => {
+    document.querySelector('.input-container').classList.add('offline');
+  }));
 
-  /*****************************************************************************
-   *
-   * Event listeners for UI elements
-   *
-   ****************************************************************************/
-
-  // document.getElementById('butRefresh').addEventListener('click', function() {
-  //   // Refresh all of the forecasts
-  //   app.updateForecasts();
-  // });
-
-  // document.getElementById('butAdd').addEventListener('click', function() {
-  //   // Open/show the add new city dialog
-  //   app.toggleAddDialog(true);
-  // });
+  window.addEventListener('online', (() => {
+    document.querySelector('.input-container').classList.remove('offline');
+  }));
 
   document.getElementById('searchByZip').addEventListener('click', function () {
 
@@ -41,24 +31,7 @@
     } else {
       alert('Please enter a valid zip code');
     }
-    // // Add the newly selected city
-    // var select = document.getElementById('selectCityToAdd');
-    // var selected = select.options[select.selectedIndex];
-    // var key = selected.value;
-    // var label = selected.textContent;
-    // if (!app.selectedCities) {
-    //   app.selectedCities = [];
-    // }
-    // app.getForecast(key, label);
-    // app.selectedCities.push({ key: key, label: label });
-    // app.saveSelectedCities();
-    // app.toggleAddDialog(false);
   });
-
-  // document.getElementById('butAddCancel').addEventListener('click', function() {
-  //   // Close the add new city dialog
-  //   app.toggleAddDialog(false);
-  // });
 
 
   app.updateDogCard = function(dog, timestamp = new Date()) {
@@ -76,6 +49,7 @@
     if (!card) {
       card = app.cardTemplate.cloneNode(true);
       card.classList.remove('cardTemplate');
+      card.classList.add('current-dog');
       card.querySelector('.name').textContent = dog.name.$t;
       card.removeAttribute('hidden');
       app.container.appendChild(card);
@@ -99,7 +73,13 @@
     if(dog.description.$t){
       card.querySelector('.description').textContent = truncateText(dog.description.$t, 140);
     }
-    card.querySelector('.image').style.backgroundImage = `url(${dog.media.photos.photo[2].$t})`;
+    if(dog.media && dog.media.photos && dog.media.photos.photo){
+      card.querySelector('.image').style.backgroundImage = `url(${dog.media.photos.photo[2].$t})`;
+    } else {
+      card.querySelector('.image').style.backgroundImage = `url('../not-available.jpg')`;
+    }
+    
+    
     card.querySelector('.age').textContent = dog.age.$t;
     card.querySelector('.sex').textContent = dog.sex.$t;
 
@@ -111,16 +91,50 @@
   };
 
 
-
-   
   app.getNewDogs = (zipCode = 80205) => {
 
+    console.log(app.onLine);
+
+    
+
     app.storedDogs = [];
-    localStorage.storedDogs = app.storedDogs;
+    localStorage.storedDogs = [];
+    app.visibleCards = {};
+
+    const removeElements = (elms) => [...elms].forEach(el => el.remove());
+    removeElements(document.querySelectorAll(".current-dog"));
 
     let url = 'http://api.petfinder.com/pet.find';
-    url += `?key=c8f9ca2d4894964d1154f0fa768a67da&animal=dog&output=basic&format=json&location=${zipCode}`
+    url += `?key=APIKEY&animal=dog&output=basic&format=json&location=${zipCode}`
 
+    if ('caches' in window) {
+      /*
+       * Check if the service worker has already cached this
+       * data. If the service worker has the data, then display the cached
+       * data while the app fetches the latest data.
+       */
+      caches.match(url).then(function (response) {
+        if (response) {
+          response.json().then(function updateFromCache(data) {
+            console.log('coming from cache!!');
+            if (data && data.petfinder && data.petfinder.pets) {
+              data.petfinder.pets.pet.map((dog) => {
+                app.updateDogCard(dog);
+                app.saveDogsLocally(dog, 'storedDogs')
+              });
+            } else {
+              alert('Could not find any dogs using that zip code');
+            }
+          });
+        } else {
+          if (!app.onLine) {
+            alert('Cannot get new dogs while you are offline');
+            return;
+          }
+        }
+      });
+    } 
+    
     fetch(url)
       .then(
         function (response) {
@@ -130,10 +144,15 @@
             return;
           }
           response.json().then(function (data) {
-            data.petfinder.pets.pet.map((dog) => {
-              app.updateDogCard(dog);
-              app.saveDogsLocally(dog, 'storedDogs')
-            });
+            if(data && data.petfinder && data.petfinder.pets){
+              data.petfinder.pets.pet.map((dog) => {
+                app.updateDogCard(dog);
+                app.saveDogsLocally(dog, 'storedDogs')
+              });
+            } else {
+              alert('Could not find any dogs using that zip code');
+            }
+            
           });
         }
       )
@@ -145,15 +164,7 @@
 
   app.saveDogsLocally = (dog, localTable) => {
     app[localTable].push(dog);
-
-    // //only ever want to store 25 dogs locally
-    // let dogCount = app[localTable].length;
-    // if (dogCount > 25) {
-    //   app[localTable].slice(dogCount - 25);
-    // }
-    // console.log('dogCount: ', dogCount);
     let tempLocalTable = JSON.stringify(app[localTable]);
-    console.log('tempLocalTable: ', tempLocalTable);
     localStorage[localTable] = tempLocalTable;
   }
 
@@ -183,13 +194,19 @@
         app.updateDogCard(dog);
       });
     }
-
-    console.log('app: ', app);
-
   } else {
     /* The user is using the app for the first time */
     app.getNewDogs();
   }
 
-  // TODO add service worker code here
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('../service-worker.js').then(function (registration) {
+        console.log('ServiceWorker registration successful with scope: ', registration.scope);
+      }, function (err) {
+        console.log('ServiceWorker registration failed: ', err);
+      });
+    });
+  }
 })();
